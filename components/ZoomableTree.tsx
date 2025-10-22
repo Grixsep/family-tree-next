@@ -16,19 +16,23 @@ type ViewLevel = "minimal" | "parents" | "grandparents" | "all";
 
 // Layout constants
 const LAYOUT = {
+  SLOT_WIDTH: 160, // Width of each grid slot
   NODE_WIDTH: 140,
   NODE_HEIGHT: 120,
-  HORIZONTAL_GAP: 80,
-  VERTICAL_GAP: 120,
-  MARRIAGE_LINE_WIDTH: 60,
-  SIBLING_LINE_HEIGHT: 40,
+  VERTICAL_GAP: 240, // Increased for better readability
+  HOUSEHOLD_GAP_SLOTS: 2, // 2 empty slots between households for readability
 } as const;
 
-interface NodePosition {
-  person: Person;
-  x: number;
+interface GridSlot {
+  person?: Person;
+  household: string; // Identifier for which household this belongs to
+  isGap: boolean; // Is this a gap slot between households?
+}
+
+interface GridRow {
   y: number;
-  spouse?: Person;
+  slots: GridSlot[];
+  generation: number;
 }
 
 export default function ZoomableTree({
@@ -36,7 +40,7 @@ export default function ZoomableTree({
   onPersonClick,
   selectedPersonId,
 }: ZoomableTreeProps) {
-  const [viewLevel, setViewLevel] = useState<ViewLevel>("parents");
+  const [viewLevel, setViewLevel] = useState<ViewLevel>("grandparents");
   const [expandedBranches, setExpandedBranches] = useState<Set<string>>(
     new Set()
   );
@@ -55,469 +59,447 @@ export default function ZoomableTree({
     });
   };
 
-  // Calculate positions for all nodes
-  const positions = useMemo(() => {
+  // Build grid system
+  const grid = useMemo(() => {
     const showParents = viewLevel !== "minimal";
     const showGrandparents =
       viewLevel === "grandparents" || viewLevel === "all";
 
-    // Get key people
-    const you = getPersonById("you");
+    const paul = getPersonById("paul");
     const an = getPersonById("an");
-    const anBrother = getPersonById("an-brother");
+    const phan = getPersonById("phan");
 
-    if (!you || !an) return null;
+    if (!paul || !an) return null;
 
-    // Base positions (center of canvas)
-    const centerX = 1000;
-    const centerY = 600;
+    const rows: GridRow[] = [];
+    const centerY = 900;
 
-    // Calculate complexity for each side
-    const calculateSideComplexity = (parentIds?: string[]) => {
-      if (!parentIds || !showGrandparents) return 1;
-      let complexity = 2; // Parents themselves
-      parentIds.forEach((parentId) => {
-        const parent = getPersonById(parentId);
-        if (parent?.parents) {
-          complexity += parent.parents.length;
-          // Check for expanded branches
-          if (expandedBranches.has(parentId)) {
-            complexity += (parent.formerSpouses?.length || 0) * 2;
-          }
-        }
-      });
-      return complexity;
-    };
+    // === GENERATION 0: Current (An, Paul, siblings) ===
+    const gen0Slots: GridSlot[] = [];
 
-    const ansComplexity = calculateSideComplexity(an.parents);
-    const yoursComplexity = calculateSideComplexity(you.parents);
+    // Household 1: An's siblings (Phan, An)
+    if (phan) {
+      gen0Slots.push({ person: phan, household: "an-household", isGap: false });
+      // Single slot gap between siblings
+      gen0Slots.push({ household: "an-household", isGap: true });
+    }
+    gen0Slots.push({ person: an, household: "an-household", isGap: false });
 
-    // Calculate widths for each side
-    const calculateGrandparentWidth = (parentIds?: string[]) => {
-      if (!parentIds || !showGrandparents) return 0;
+    // Gap between households
+    for (let i = 0; i < LAYOUT.HOUSEHOLD_GAP_SLOTS; i++) {
+      gen0Slots.push({ household: "gap", isGap: true });
+    }
 
-      let totalWidth = 0;
-      let count = 0;
+    // Household 2: Paul
+    gen0Slots.push({ person: paul, household: "paul-household", isGap: false });
 
-      parentIds.forEach((parentId) => {
-        const parent = getPersonById(parentId);
-        if (parent?.parents) {
-          // Standard grandparent couples
-          const gpCount = Math.ceil(parent.parents.length / 2);
-          totalWidth +=
-            gpCount * (LAYOUT.NODE_WIDTH * 2 + LAYOUT.MARRIAGE_LINE_WIDTH);
-          count += gpCount;
-
-          // Add expanded branches
-          if (expandedBranches.has(parentId) && parent.formerSpouses) {
-            totalWidth +=
-              parent.formerSpouses.length *
-              (LAYOUT.NODE_WIDTH * 2 + LAYOUT.MARRIAGE_LINE_WIDTH);
-            count += parent.formerSpouses.length;
-          }
-        }
-      });
-
-      // Add gaps between groups
-      if (count > 0) {
-        totalWidth += (count - 1) * LAYOUT.HORIZONTAL_GAP;
-      }
-
-      return totalWidth;
-    };
-
-    const anGpWidth = calculateGrandparentWidth(an.parents);
-    const youGpWidth = calculateGrandparentWidth(you.parents);
-
-    // Calculate parent width (just the couple)
-    const parentWidth = LAYOUT.NODE_WIDTH * 2 + LAYOUT.MARRIAGE_LINE_WIDTH;
-
-    // Total side widths (max of parent width and grandparent width)
-    const ansSideWidth = Math.max(parentWidth, anGpWidth) || LAYOUT.NODE_WIDTH;
-    const yoursSideWidth =
-      Math.max(parentWidth, youGpWidth) || LAYOUT.NODE_WIDTH;
-
-    // Position An and Paul based on their side widths
-    const anX =
-      centerX -
-      ansSideWidth / 2 -
-      LAYOUT.NODE_WIDTH / 2 -
-      LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-    const paulX =
-      centerX +
-      yoursSideWidth / 2 +
-      LAYOUT.NODE_WIDTH / 2 +
-      LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-
-    const result: {
-      current: NodePosition[];
-      parents: NodePosition[];
-      grandparents: NodePosition[];
-      lines: any[];
-    } = {
-      current: [],
-      parents: [],
-      grandparents: [],
-      lines: [],
-    };
-
-    // BOTTOM: Current generation (An & Paul)
-    result.current.push({
-      person: an,
-      x: anX,
+    rows.push({
       y: centerY,
-      spouse: you,
+      slots: gen0Slots,
+      generation: 0,
     });
 
-    result.current.push({
-      person: you,
-      x: paulX,
-      y: centerY,
+    if (!showParents) return { rows, centerY };
+
+    // === GENERATION -1: Parents ===
+    const gen1Slots: GridSlot[] = [];
+
+    const sang = getPersonById("sang");
+    const thuan = getPersonById("thuan");
+    const john = getPersonById("john");
+    const donna = getPersonById("donna");
+    const carolyn = getPersonById("carolyn");
+
+    // Household 1: An's parents (Sang, Thuan)
+    if (sang)
+      gen1Slots.push({ person: sang, household: "an-parents", isGap: false });
+    if (thuan)
+      gen1Slots.push({ person: thuan, household: "an-parents", isGap: false });
+
+    // Gap between households
+    for (let i = 0; i < LAYOUT.HOUSEHOLD_GAP_SLOTS; i++) {
+      gen1Slots.push({ household: "gap", isGap: true });
+    }
+
+    // Household 2: Paul's parents (John, Donna) and John's siblings
+    // CRITICAL: Married couples MUST be adjacent for marriage line
+    // Order: Siblings first, then married couple
+
+    // John's siblings first (like Carolyn)
+    if (carolyn) {
+      gen1Slots.push({
+        person: carolyn,
+        household: "paul-parents",
+        isGap: false,
+      });
+      gen1Slots.push({ household: "paul-parents", isGap: true }); // Gap after sibling
+    }
+
+    // Then the married couple (adjacent, no gap between them)
+    if (john)
+      gen1Slots.push({ person: john, household: "paul-parents", isGap: false });
+    if (donna)
+      gen1Slots.push({
+        person: donna,
+        household: "paul-parents",
+        isGap: false,
+      });
+
+    rows.push({
+      y: centerY - LAYOUT.VERTICAL_GAP,
+      slots: gen1Slots,
+      generation: -1,
     });
 
-    // An's brother (sibling line)
-    if (anBrother) {
-      const brotherX = anX - LAYOUT.NODE_WIDTH - LAYOUT.HORIZONTAL_GAP;
-      result.current.push({
-        person: anBrother,
-        x: brotherX,
-        y: centerY,
+    if (!showGrandparents) return { rows, centerY };
+
+    // === GENERATION -2: Grandparents ===
+    const gen2Slots: GridSlot[] = [];
+
+    // An's paternal grandparents
+    const anPaternalGP1 = sang?.parents?.[0]
+      ? getPersonById(sang.parents[0])
+      : null;
+    const anPaternalGP2 = sang?.parents?.[1]
+      ? getPersonById(sang.parents[1])
+      : null;
+
+    if (anPaternalGP1)
+      gen2Slots.push({
+        person: anPaternalGP1,
+        household: "an-paternal-gp",
+        isGap: false,
+      });
+    if (anPaternalGP2)
+      gen2Slots.push({
+        person: anPaternalGP2,
+        household: "an-paternal-gp",
+        isGap: false,
       });
 
-      // Sibling line
-      result.lines.push({
-        type: "sibling",
-        x1: brotherX + LAYOUT.NODE_WIDTH / 2,
-        y1: centerY - LAYOUT.SIBLING_LINE_HEIGHT,
-        x2: anX + LAYOUT.NODE_WIDTH / 2,
-        y2: centerY - LAYOUT.SIBLING_LINE_HEIGHT,
-        style: "solid",
-      });
-
-      // Vertical connectors to sibling line
-      result.lines.push({
-        type: "vertical",
-        x1: brotherX + LAYOUT.NODE_WIDTH / 2,
-        y1: centerY,
-        x2: brotherX + LAYOUT.NODE_WIDTH / 2,
-        y2: centerY - LAYOUT.SIBLING_LINE_HEIGHT,
-        style: "solid",
-      });
-
-      result.lines.push({
-        type: "vertical",
-        x1: anX + LAYOUT.NODE_WIDTH / 2,
-        y1: centerY,
-        x2: anX + LAYOUT.NODE_WIDTH / 2,
-        y2: centerY - LAYOUT.SIBLING_LINE_HEIGHT,
-        style: "solid",
-      });
+    // Gap
+    for (let i = 0; i < LAYOUT.HOUSEHOLD_GAP_SLOTS; i++) {
+      gen2Slots.push({ household: "gap", isGap: true });
     }
 
-    // Marriage line between An and Paul
-    result.lines.push({
-      type: "marriage",
-      x1: anX + LAYOUT.NODE_WIDTH,
-      y1: centerY + LAYOUT.NODE_HEIGHT / 2,
-      x2: paulX,
-      y2: centerY + LAYOUT.NODE_HEIGHT / 2,
-      style: "solid",
+    // An's maternal grandparents
+    const anMaternalGP1 = thuan?.parents?.[0]
+      ? getPersonById(thuan.parents[0])
+      : null;
+    const anMaternalGP2 = thuan?.parents?.[1]
+      ? getPersonById(thuan.parents[1])
+      : null;
+
+    if (anMaternalGP1)
+      gen2Slots.push({
+        person: anMaternalGP1,
+        household: "an-maternal-gp",
+        isGap: false,
+      });
+    if (anMaternalGP2)
+      gen2Slots.push({
+        person: anMaternalGP2,
+        household: "an-maternal-gp",
+        isGap: false,
+      });
+
+    // Gap
+    for (let i = 0; i < LAYOUT.HOUSEHOLD_GAP_SLOTS; i++) {
+      gen2Slots.push({ household: "gap", isGap: true });
+    }
+
+    // Paul's paternal grandparents (John's parents)
+    const paulPaternalGP1 = john?.parents?.[0]
+      ? getPersonById(john.parents[0])
+      : null;
+    const paulPaternalGP2 = john?.parents?.[1]
+      ? getPersonById(john.parents[1])
+      : null;
+
+    if (paulPaternalGP1)
+      gen2Slots.push({
+        person: paulPaternalGP1,
+        household: "paul-paternal-gp",
+        isGap: false,
+      });
+    if (paulPaternalGP2)
+      gen2Slots.push({
+        person: paulPaternalGP2,
+        household: "paul-paternal-gp",
+        isGap: false,
+      });
+
+    // Gap
+    for (let i = 0; i < LAYOUT.HOUSEHOLD_GAP_SLOTS; i++) {
+      gen2Slots.push({ household: "gap", isGap: true });
+    }
+
+    // Paul's maternal grandparents (Donna's parents)
+    const paulMaternalGP1 = donna?.parents?.[0]
+      ? getPersonById(donna.parents[0])
+      : null;
+    const paulMaternalGP2 = donna?.parents?.[1]
+      ? getPersonById(donna.parents[1])
+      : null;
+
+    // Check for ex-spouses (like Martha's first husband)
+    const martha = paulMaternalGP2;
+    const showMarthaEx =
+      martha && expandedBranches.has(martha.id) && martha.formerSpouses;
+
+    if (showMarthaEx && martha.formerSpouses) {
+      // Add ex-spouse first
+      const ex = getPersonById(martha.formerSpouses[0]);
+      if (ex)
+        gen2Slots.push({
+          person: ex,
+          household: "paul-maternal-gp-ex",
+          isGap: false,
+        });
+    }
+
+    if (paulMaternalGP1)
+      gen2Slots.push({
+        person: paulMaternalGP1,
+        household: "paul-maternal-gp",
+        isGap: false,
+      });
+    if (paulMaternalGP2)
+      gen2Slots.push({
+        person: paulMaternalGP2,
+        household: "paul-maternal-gp",
+        isGap: false,
+      });
+
+    rows.push({
+      y: centerY - LAYOUT.VERTICAL_GAP * 2,
+      slots: gen2Slots,
+      generation: -2,
     });
 
-    if (!showParents) return result;
-
-    // MIDDLE: Parents
-    const parentsY = centerY - LAYOUT.VERTICAL_GAP;
-
-    // An's parents
-    if (an.parents && an.parents.length >= 2) {
-      const anDad = getPersonById(an.parents[0]);
-      const anMom = getPersonById(an.parents[1]);
-
-      if (anDad && anMom) {
-        const anParentsCenterX = anX + LAYOUT.NODE_WIDTH / 2;
-        const anDadX =
-          anParentsCenterX -
-          LAYOUT.NODE_WIDTH / 2 -
-          LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        const anMomX = anParentsCenterX + LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-
-        result.parents.push({
-          person: anDad,
-          x: anDadX,
-          y: parentsY,
-          spouse: anMom,
-        });
-
-        result.parents.push({
-          person: anMom,
-          x: anMomX,
-          y: parentsY,
-        });
-
-        // Marriage line between An's parents
-        result.lines.push({
-          type: "marriage",
-          x1: anDadX + LAYOUT.NODE_WIDTH,
-          y1: parentsY + LAYOUT.NODE_HEIGHT / 2,
-          x2: anMomX,
-          y2: parentsY + LAYOUT.NODE_HEIGHT / 2,
-          style: "solid",
-        });
-
-        // Line from parents to An (from middle of marriage line)
-        const marriageLineMidX =
-          anDadX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        const marriageLineMidY = parentsY + LAYOUT.NODE_HEIGHT / 2;
-
-        // Vertical down to midpoint
-        result.lines.push({
-          type: "parent-child-vertical",
-          x1: marriageLineMidX,
-          y1: marriageLineMidY,
-          x2: marriageLineMidX,
-          y2: marriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-          style: "solid",
-        });
-
-        // Diagonal to An
-        result.lines.push({
-          type: "parent-child-diagonal",
-          x1: marriageLineMidX,
-          y1: marriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-          x2: anX + LAYOUT.NODE_WIDTH / 2,
-          y2: centerY,
-          style: "solid",
-        });
-      }
-    }
-
-    // Paul's parents
-    if (you.parents && you.parents.length >= 2) {
-      const paulDad = getPersonById(you.parents[0]);
-      const paulMom = getPersonById(you.parents[1]);
-
-      if (paulDad && paulMom) {
-        const paulParentsCenterX = paulX + LAYOUT.NODE_WIDTH / 2;
-        const paulDadX =
-          paulParentsCenterX -
-          LAYOUT.NODE_WIDTH / 2 -
-          LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        const paulMomX = paulParentsCenterX + LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-
-        result.parents.push({
-          person: paulDad,
-          x: paulDadX,
-          y: parentsY,
-          spouse: paulMom,
-        });
-
-        result.parents.push({
-          person: paulMom,
-          x: paulMomX,
-          y: parentsY,
-        });
-
-        // Marriage line between Paul's parents
-        result.lines.push({
-          type: "marriage",
-          x1: paulDadX + LAYOUT.NODE_WIDTH,
-          y1: parentsY + LAYOUT.NODE_HEIGHT / 2,
-          x2: paulMomX,
-          y2: parentsY + LAYOUT.NODE_HEIGHT / 2,
-          style: "solid",
-        });
-
-        // Line from parents to Paul
-        const marriageLineMidX =
-          paulDadX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        const marriageLineMidY = parentsY + LAYOUT.NODE_HEIGHT / 2;
-
-        result.lines.push({
-          type: "parent-child-vertical",
-          x1: marriageLineMidX,
-          y1: marriageLineMidY,
-          x2: marriageLineMidX,
-          y2: marriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-          style: "solid",
-        });
-
-        result.lines.push({
-          type: "parent-child-diagonal",
-          x1: marriageLineMidX,
-          y1: marriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-          x2: paulX + LAYOUT.NODE_WIDTH / 2,
-          y2: centerY,
-          style: "solid",
-        });
-      }
-    }
-
-    if (!showGrandparents) return result;
-
-    // TOP: Grandparents
-    const grandparentsY = parentsY - LAYOUT.VERTICAL_GAP;
-
-    // Helper function to add grandparents for a parent
-    const addGrandparents = (
-      parentPerson: Person,
-      parentX: number,
-      isLeftSide: boolean
-    ) => {
-      if (!parentPerson.parents || parentPerson.parents.length === 0) return;
-
-      // Get grandparent pairs
-      const gpPairs: Array<{
-        gp1: Person;
-        gp2?: Person;
-        type: string;
-        isEx?: boolean;
-      }> = [];
-
-      // Main grandparents
-      const gp1 = getPersonById(parentPerson.parents[0]);
-      const gp2 = parentPerson.parents[1]
-        ? getPersonById(parentPerson.parents[1])
-        : undefined;
-
-      if (gp1) {
-        gpPairs.push({ gp1, gp2, type: "main" });
-
-        // Check for expanded ex-spouse branch (like Len and Margaret)
-        if (expandedBranches.has(gp1.id) && gp1.formerSpouses) {
-          gp1.formerSpouses.forEach((exId) => {
-            const ex = getPersonById(exId);
-            if (ex) {
-              gpPairs.push({ gp1, gp2: ex, type: "ex", isEx: true });
-            }
-          });
-        }
-      }
-
-      // Calculate total width needed
-      const pairWidths = gpPairs.map((pair) =>
-        pair.gp2
-          ? LAYOUT.NODE_WIDTH * 2 + LAYOUT.MARRIAGE_LINE_WIDTH
-          : LAYOUT.NODE_WIDTH
-      );
-      const totalWidth =
-        pairWidths.reduce((sum, w) => sum + w, 0) +
-        (pairWidths.length - 1) * LAYOUT.HORIZONTAL_GAP;
-
-      // Sort: complex branches go on outside
-      // For left side: complex on left, simple on right (toward center)
-      // For right side: complex on right, simple on left (toward center)
-      const sorted = [...gpPairs].sort((a, b) => {
-        const aComplexity = (a.isEx ? 10 : 0) + (a.gp2 ? 2 : 1);
-        const bComplexity = (b.isEx ? 10 : 0) + (b.gp2 ? 2 : 1);
-        return isLeftSide
-          ? bComplexity - aComplexity
-          : aComplexity - bComplexity;
-      });
-
-      // Position grandparents
-      let currentX = parentX + LAYOUT.NODE_WIDTH / 2 - totalWidth / 2;
-
-      sorted.forEach((pair, idx) => {
-        const pairWidth = pairWidths[gpPairs.indexOf(pair)];
-
-        result.grandparents.push({
-          person: pair.gp1,
-          x: currentX,
-          y: grandparentsY,
-          spouse: pair.gp2,
-        });
-
-        if (pair.gp2) {
-          result.grandparents.push({
-            person: pair.gp2,
-            x: currentX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH,
-            y: grandparentsY,
-          });
-
-          // Marriage line (solid for current, dotted for ex)
-          result.lines.push({
-            type: "marriage",
-            x1: currentX + LAYOUT.NODE_WIDTH,
-            y1: grandparentsY + LAYOUT.NODE_HEIGHT / 2,
-            x2: currentX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH,
-            y2: grandparentsY + LAYOUT.NODE_HEIGHT / 2,
-            style: pair.isEx ? "dashed" : "solid",
-          });
-        }
-
-        // Line from grandparents to parent (from middle of couple)
-        const gpMarriageLineMidX = pair.gp2
-          ? currentX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH / 2
-          : currentX + LAYOUT.NODE_WIDTH / 2;
-        const gpMarriageLineMidY = grandparentsY + LAYOUT.NODE_HEIGHT / 2;
-
-        // Only draw connection line for main grandparents (not ex-spouses)
-        if (!pair.isEx) {
-          const parentMarriageMidX =
-            parentX + LAYOUT.NODE_WIDTH + LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-          const parentMarriageMidY = parentsY + LAYOUT.NODE_HEIGHT / 2;
-
-          // Vertical down from grandparents
-          result.lines.push({
-            type: "grandparent-vertical",
-            x1: gpMarriageLineMidX,
-            y1: gpMarriageLineMidY,
-            x2: gpMarriageLineMidX,
-            y2: gpMarriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-            style: "solid",
-          });
-
-          // Diagonal to parent
-          result.lines.push({
-            type: "grandparent-diagonal",
-            x1: gpMarriageLineMidX,
-            y1: gpMarriageLineMidY + LAYOUT.VERTICAL_GAP / 2,
-            x2: parentMarriageMidX,
-            y2: parentMarriageMidY - 10,
-            style: "solid",
-          });
-        }
-
-        currentX += pairWidth + LAYOUT.HORIZONTAL_GAP;
-      });
-    };
-
-    // Add grandparents for An's parents
-    if (an.parents && an.parents.length >= 2) {
-      const anDad = getPersonById(an.parents[0]);
-      if (anDad) {
-        const anParentsCenterX = anX + LAYOUT.NODE_WIDTH / 2;
-        const anDadX =
-          anParentsCenterX -
-          LAYOUT.NODE_WIDTH / 2 -
-          LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        addGrandparents(anDad, anDadX, true);
-      }
-    }
-
-    // Add grandparents for Paul's parents
-    if (you.parents && you.parents.length >= 2) {
-      const paulDad = getPersonById(you.parents[0]);
-      if (paulDad) {
-        const paulParentsCenterX = paulX + LAYOUT.NODE_WIDTH / 2;
-        const paulDadX =
-          paulParentsCenterX -
-          LAYOUT.NODE_WIDTH / 2 -
-          LAYOUT.MARRIAGE_LINE_WIDTH / 2;
-        addGrandparents(paulDad, paulDadX, false);
-      }
-    }
-
-    return result;
+    return { rows, centerY };
   }, [people, viewLevel, expandedBranches]);
 
-  if (!positions) return null;
+  if (!grid) return null;
+
+  // Convert grid slots to positioned nodes
+  // Each row is centered independently
+  const allNodes: Array<{
+    person: Person;
+    x: number;
+    y: number;
+    slotIndex: number;
+    rowIndex: number;
+    household: string;
+  }> = [];
+
+  const canvasCenterX = 2000; // Center point of canvas
+
+  grid.rows.forEach((row, rowIndex) => {
+    // Calculate this row's width
+    const rowWidth = row.slots.length * LAYOUT.SLOT_WIDTH;
+    const rowStartX = canvasCenterX - rowWidth / 2; // Center this row
+
+    row.slots.forEach((slot, slotIndex) => {
+      if (!slot.isGap && slot.person) {
+        allNodes.push({
+          person: slot.person,
+          x:
+            rowStartX +
+            slotIndex * LAYOUT.SLOT_WIDTH +
+            (LAYOUT.SLOT_WIDTH - LAYOUT.NODE_WIDTH) / 2,
+          y: row.y,
+          slotIndex,
+          rowIndex,
+          household: slot.household,
+        });
+      }
+    });
+  });
+
+  // Generate connection lines
+  const lines: any[] = [];
+
+  // Helper to find nodes
+  const findNode = (personId: string) =>
+    allNodes.find((n) => n.person.id === personId);
+  const findNodesInHousehold = (household: string, rowIndex: number) =>
+    allNodes.filter(
+      (n) => n.household === household && n.rowIndex === rowIndex
+    );
+
+  // Marriage lines (horizontal between spouses in same household)
+  grid.rows.forEach((row, rowIndex) => {
+    const householdNodes = new Map<string, typeof allNodes>();
+
+    allNodes
+      .filter((n) => n.rowIndex === rowIndex)
+      .forEach((node) => {
+        if (!householdNodes.has(node.household)) {
+          householdNodes.set(node.household, []);
+        }
+        householdNodes.get(node.household)?.push(node);
+      });
+
+    householdNodes.forEach((nodes, household) => {
+      if (nodes.length === 2) {
+        // Draw marriage line between the two people in household
+        const [person1, person2] = nodes.sort(
+          (a, b) => a.slotIndex - b.slotIndex
+        );
+
+        // Check if this is an ex-spouse relationship
+        const isEx =
+          person1.person.formerSpouses?.includes(person2.person.id) ||
+          person2.person.formerSpouses?.includes(person1.person.id);
+
+        lines.push({
+          type: "marriage",
+          x1: person1.x + LAYOUT.NODE_WIDTH,
+          y1: person1.y + LAYOUT.NODE_HEIGHT / 2,
+          x2: person2.x,
+          y2: person2.y + LAYOUT.NODE_HEIGHT / 2,
+          style: isEx ? "dashed" : "solid",
+        });
+      }
+    });
+  });
+
+  // Parent-child lines
+  // From Generation 0 to -1
+  const an = findNode("an");
+  const phan = findNode("phan");
+  const paul = findNode("paul");
+  const sang = findNode("sang");
+  const thuan = findNode("thuan");
+  const john = findNode("john");
+  const donna = findNode("donna");
+
+  if (an && sang && thuan) {
+    // Find marriage line midpoint between Sang & Thuan
+    const parentMidX = (sang.x + thuan.x + LAYOUT.NODE_WIDTH) / 2;
+    const parentMidY = sang.y + LAYOUT.NODE_HEIGHT / 2;
+
+    // If Phan exists, connect to sibling line
+    if (phan) {
+      const siblingMidX = (phan.x + an.x + LAYOUT.NODE_WIDTH) / 2;
+      const siblingY = an.y - 60; // Sibling line height
+
+      // Sibling line
+      lines.push({
+        type: "sibling",
+        x1: phan.x + LAYOUT.NODE_WIDTH / 2,
+        y1: phan.y,
+        x2: phan.x + LAYOUT.NODE_WIDTH / 2,
+        y2: siblingY,
+      });
+
+      lines.push({
+        type: "sibling",
+        x1: phan.x + LAYOUT.NODE_WIDTH / 2,
+        y1: siblingY,
+        x2: an.x + LAYOUT.NODE_WIDTH / 2,
+        y2: siblingY,
+      });
+
+      lines.push({
+        type: "sibling",
+        x1: an.x + LAYOUT.NODE_WIDTH / 2,
+        y1: siblingY,
+        x2: an.x + LAYOUT.NODE_WIDTH / 2,
+        y2: an.y,
+      });
+
+      // From parents to sibling line
+      lines.push({
+        type: "parent-child",
+        x1: parentMidX,
+        y1: parentMidY,
+        x2: parentMidX,
+        y2: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+      });
+
+      lines.push({
+        type: "parent-child",
+        x1: parentMidX,
+        y1: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+        x2: siblingMidX,
+        y2: siblingY,
+      });
+    } else {
+      // Direct line to An
+      lines.push({
+        type: "parent-child",
+        x1: parentMidX,
+        y1: parentMidY,
+        x2: parentMidX,
+        y2: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+      });
+
+      lines.push({
+        type: "parent-child",
+        x1: parentMidX,
+        y1: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+        x2: an.x + LAYOUT.NODE_WIDTH / 2,
+        y2: an.y,
+      });
+    }
+  }
+
+  if (paul && john && donna) {
+    // Find marriage line midpoint between John & Donna
+    const parentMidX = (john.x + donna.x + LAYOUT.NODE_WIDTH) / 2;
+    const parentMidY = john.y + LAYOUT.NODE_HEIGHT / 2;
+
+    // Single child: Add vertical stub up (same height as sibling line would be)
+    const stubHeight = 60; // Same as SIBLING_LINE_HEIGHT
+
+    // Vertical stub from Paul
+    lines.push({
+      type: "child-stub",
+      x1: paul.x + LAYOUT.NODE_WIDTH / 2,
+      y1: paul.y,
+      x2: paul.x + LAYOUT.NODE_WIDTH / 2,
+      y2: paul.y - stubHeight,
+    });
+
+    // Line from parents down to stub level
+    lines.push({
+      type: "parent-child",
+      x1: parentMidX,
+      y1: parentMidY,
+      x2: parentMidX,
+      y2: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+    });
+
+    // Horizontal/diagonal to child's stub
+    lines.push({
+      type: "parent-child",
+      x1: parentMidX,
+      y1: parentMidY + LAYOUT.VERTICAL_GAP / 2,
+      x2: paul.x + LAYOUT.NODE_WIDTH / 2,
+      y2: paul.y - stubHeight,
+    });
+  }
+
+  // Grandparent to parent lines (similar logic)
+  // TODO: Add grandparent connections
+
+  // Red highlight box around An & Paul
+  const highlightBox =
+    an && paul
+      ? {
+          x: an.x - 20,
+          y: an.y - 20,
+          width: paul.x - an.x + LAYOUT.NODE_WIDTH + 40,
+          height: LAYOUT.NODE_HEIGHT + 40,
+        }
+      : null;
 
   return (
     <div className="w-full h-[calc(100vh-200px)] bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 rounded-2xl shadow-inner relative overflow-hidden">
       <TransformWrapper
-        initialScale={0.7}
+        initialScale={0.5}
         minScale={0.2}
         maxScale={3}
         centerOnInit={true}
@@ -586,142 +568,72 @@ export default function ZoomableTree({
             >
               <div
                 className="relative"
-                style={{ width: "2500px", height: "1500px" }}
+                style={{ width: "4000px", height: "2000px" }}
               >
-                {/* SVG for all connection lines */}
+                {/* SVG for lines */}
                 <svg
                   className="absolute top-0 left-0 pointer-events-none"
-                  width="2500"
-                  height="1500"
+                  width="4000"
+                  height="2000"
                   style={{ zIndex: 1 }}
                 >
-                  <defs>
-                    <marker
-                      id="arrowhead"
-                      markerWidth="10"
-                      markerHeight="10"
-                      refX="5"
-                      refY="3"
-                      orient="auto"
-                    >
-                      <polygon points="0 0, 10 3, 0 6" fill="#9CA3AF" />
-                    </marker>
-                  </defs>
+                  {/* Red highlight box */}
+                  {highlightBox && (
+                    <rect
+                      x={highlightBox.x}
+                      y={highlightBox.y}
+                      width={highlightBox.width}
+                      height={highlightBox.height}
+                      fill="none"
+                      stroke="#EF4444"
+                      strokeWidth="3"
+                      rx="16"
+                      className="transition-all duration-500"
+                    />
+                  )}
 
-                  {positions.lines.map((line, idx) => {
-                    if (line.type === "marriage") {
-                      // Marriage lines (horizontal, pink gradient or dotted)
-                      return (
-                        <line
-                          key={idx}
-                          x1={line.x1}
-                          y1={line.y1}
-                          x2={line.x2}
-                          y2={line.y2}
-                          stroke={
-                            line.style === "solid" ? "#F472B6" : "#9CA3AF"
-                          }
-                          strokeWidth={line.style === "solid" ? "3" : "2"}
-                          strokeDasharray={
-                            line.style === "dashed" ? "5,5" : "0"
-                          }
-                          className="transition-all duration-500"
-                        />
-                      );
-                    } else if (line.type === "sibling") {
-                      // Sibling connector line (horizontal)
-                      return (
-                        <line
-                          key={idx}
-                          x1={line.x1}
-                          y1={line.y1}
-                          x2={line.x2}
-                          y2={line.y2}
-                          stroke="#9CA3AF"
-                          strokeWidth="2"
-                          className="transition-all duration-500"
-                        />
-                      );
-                    } else {
-                      // All other lines (parent-child connections)
-                      return (
-                        <line
-                          key={idx}
-                          x1={line.x1}
-                          y1={line.y1}
-                          x2={line.x2}
-                          y2={line.y2}
-                          stroke="#9CA3AF"
-                          strokeWidth="2"
-                          strokeDasharray={
-                            line.style === "dashed" ? "5,5" : "0"
-                          }
-                          className="transition-all duration-500"
-                        />
-                      );
-                    }
-                  })}
+                  {lines.map((line, idx) => (
+                    <line
+                      key={idx}
+                      x1={line.x1}
+                      y1={line.y1}
+                      x2={line.x2}
+                      y2={line.y2}
+                      stroke={
+                        line.type === "marriage"
+                          ? line.style === "solid"
+                            ? "#F472B6"
+                            : "#9CA3AF"
+                          : "#9CA3AF"
+                      }
+                      strokeWidth={line.type === "marriage" ? "3" : "2"}
+                      strokeDasharray={line.style === "dashed" ? "5,5" : "0"}
+                      className="transition-all duration-500"
+                    />
+                  ))}
                 </svg>
 
-                {/* Render all nodes */}
+                {/* Render nodes */}
                 <div className="absolute top-0 left-0" style={{ zIndex: 2 }}>
-                  {/* Grandparents */}
-                  {positions.grandparents.map((node, idx) => (
+                  {allNodes.map((node, idx) => (
                     <div
-                      key={`gp-${idx}`}
+                      key={idx}
                       className="absolute transition-all duration-500"
-                      style={{
-                        left: `${node.x}px`,
-                        top: `${node.y}px`,
-                      }}
+                      style={{ left: `${node.x}px`, top: `${node.y}px` }}
                     >
                       <TreeNode
                         person={node.person}
                         onClick={() => onPersonClick(node.person)}
+                        isSpouse={
+                          node.person.spouses && node.person.spouses.length > 0
+                        }
                         isSelected={node.person.id === selectedPersonId}
                         showExpand={
                           node.person.formerSpouses &&
-                          node.person.formerSpouses.length > 0
+                          node.person.formerSpouses.length > 0 &&
+                          !expandedBranches.has(node.person.id)
                         }
                         onExpand={() => toggleBranch(node.person.id)}
-                      />
-                    </div>
-                  ))}
-
-                  {/* Parents */}
-                  {positions.parents.map((node, idx) => (
-                    <div
-                      key={`parent-${idx}`}
-                      className="absolute transition-all duration-500"
-                      style={{
-                        left: `${node.x}px`,
-                        top: `${node.y}px`,
-                      }}
-                    >
-                      <TreeNode
-                        person={node.person}
-                        onClick={() => onPersonClick(node.person)}
-                        isSpouse={!!node.spouse}
-                        isSelected={node.person.id === selectedPersonId}
-                      />
-                    </div>
-                  ))}
-
-                  {/* Current Generation */}
-                  {positions.current.map((node, idx) => (
-                    <div
-                      key={`current-${idx}`}
-                      className="absolute transition-all duration-500"
-                      style={{
-                        left: `${node.x}px`,
-                        top: `${node.y}px`,
-                      }}
-                    >
-                      <TreeNode
-                        person={node.person}
-                        onClick={() => onPersonClick(node.person)}
-                        isSpouse={!!node.spouse}
-                        isSelected={node.person.id === selectedPersonId}
                       />
                     </div>
                   ))}
