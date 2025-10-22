@@ -1,6 +1,6 @@
 'use client';
 
-import { Person } from '@/lib/familyData';
+import { Person, isDeceased } from '@/lib/familyData';
 import { User, Heart } from 'lucide-react';
 
 interface TreeNodeProps {
@@ -8,10 +8,23 @@ interface TreeNodeProps {
   onClick: () => void;
   isSpouse?: boolean;
   isSelected?: boolean;
+  showExpand?: boolean;
+  onExpand?: () => void;
 }
 
-export default function TreeNode({ person, onClick, isSpouse, isSelected }: TreeNodeProps) {
+export default function TreeNode({ person, onClick, isSpouse, isSelected, showExpand, onExpand }: TreeNodeProps) {
+  const deceased = isDeceased(person);
+  
   const getNodeColor = () => {
+    if (deceased) {
+      // Deceased people get muted colors with dark border
+      if (isSpouse) return 'bg-gradient-to-br from-gray-100 to-gray-200 border-gray-800';
+      if (person.generation === 0) return 'bg-gradient-to-br from-blue-100 to-blue-200 border-gray-800';
+      if (person.generation < 0) return 'bg-gradient-to-br from-green-100 to-green-200 border-gray-800';
+      return 'bg-gradient-to-br from-purple-100 to-purple-200 border-gray-800';
+    }
+    
+    // Living people get vibrant colors
     if (isSpouse) return 'bg-gradient-to-br from-pink-50 to-rose-100 border-pink-400';
     if (person.generation === 0) return 'bg-gradient-to-br from-blue-50 to-indigo-100 border-blue-400';
     if (person.generation < 0) return 'bg-gradient-to-br from-green-50 to-emerald-100 border-green-400';
@@ -23,53 +36,79 @@ export default function TreeNode({ person, onClick, isSpouse, isSelected }: Tree
     : `${person.firstName} ${person.lastName}`;
 
   return (
-    <div
-      onClick={onClick}
-      className={`
-        relative cursor-pointer rounded-xl border-2 p-3 shadow-lg
-        transition-all duration-200 hover:shadow-2xl hover:scale-110
-        ${getNodeColor()}
-        ${isSelected ? 'ring-4 ring-blue-500 scale-110' : ''}
-        w-[140px]
-      `}
-    >
-      {/* Photo or Avatar */}
-      <div className="flex justify-center mb-2">
-        {person.photoUrl ? (
-          <img
-            src={person.photoUrl}
-            alt={displayName}
-            className="w-16 h-16 rounded-full object-cover border-3 border-white shadow-md"
-          />
-        ) : (
-          <div className="w-16 h-16 rounded-full bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center border-3 border-white shadow-md">
-            <User className="w-8 h-8 text-gray-500" />
-          </div>
-        )}
-      </div>
-
-      {/* Name */}
-      <div className="text-center">
-        <h3 className="font-bold text-sm text-gray-800 leading-tight">
-          {person.firstName}
-        </h3>
-        <p className="text-xs text-gray-600 font-medium">
-          {person.lastName}
-        </p>
-        {person.maidenName && (
-          <p className="text-[10px] text-gray-500 italic">
-            née {person.maidenName}
-          </p>
-        )}
-      </div>
-
-      {/* Indicators */}
-      {isSpouse && (
-        <div className="flex justify-center mt-1">
-          <div className="flex items-center gap-1 text-[10px] text-pink-600">
-            <Heart className="w-2.5 h-2.5 fill-current" />
-          </div>
+    <div className="relative">
+      <div
+        onClick={onClick}
+        className={`
+          relative cursor-pointer rounded-xl border-2 p-3 shadow-lg
+          transition-all duration-200 hover:shadow-2xl hover:scale-110
+          ${getNodeColor()}
+          ${isSelected ? 'ring-4 ring-blue-500 scale-110' : ''}
+          ${deceased ? 'border-[3px]' : ''}
+          w-[140px]
+        `}
+      >
+        {/* Photo or Avatar */}
+        <div className="flex justify-center mb-2">
+          {person.photoUrl ? (
+            <img
+              src={person.photoUrl}
+              alt={displayName}
+              className={`w-16 h-16 rounded-full object-cover border-3 shadow-md ${deceased ? 'grayscale border-gray-700' : 'border-white'}`}
+            />
+          ) : (
+            <div className={`w-16 h-16 rounded-full bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center border-3 shadow-md ${deceased ? 'border-gray-700' : 'border-white'}`}>
+              <User className="w-8 h-8 text-gray-500" />
+            </div>
+          )}
         </div>
+
+        {/* Name */}
+        <div className="text-center">
+          <h3 className={`font-bold text-sm leading-tight ${deceased ? 'text-gray-700' : 'text-gray-800'}`}>
+            {person.firstName}
+          </h3>
+          <p className={`text-xs font-medium ${deceased ? 'text-gray-600' : 'text-gray-600'}`}>
+            {person.lastName}
+          </p>
+          {person.maidenName && (
+            <p className="text-[10px] text-gray-500 italic">
+              née {person.maidenName}
+            </p>
+          )}
+        </div>
+
+        {/* Dates - Show for deceased */}
+        {deceased && (
+          <div className="text-center mt-1">
+            <p className="text-[10px] text-gray-600 font-medium">
+              {person.birthDate && new Date(person.birthDate).getFullYear()} - {person.deathDate && new Date(person.deathDate).getFullYear()}
+            </p>
+          </div>
+        )}
+
+        {/* Indicators */}
+        <div className="flex justify-center mt-1 gap-1">
+          {isSpouse && !deceased && (
+            <div className="flex items-center gap-1 text-[10px] text-pink-600">
+              <Heart className="w-2.5 h-2.5 fill-current" />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Expand Button for additional branches */}
+      {showExpand && onExpand && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpand();
+          }}
+          className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 bg-blue-500 hover:bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 z-10"
+          title="Show more family members"
+        >
+          <span className="text-sm font-bold">+</span>
+        </button>
       )}
     </div>
   );
